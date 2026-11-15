@@ -27,9 +27,12 @@ export class Bot {
     this.weaponId = team === 'jac' ? ['frost', 'aurora', 'blizzard', 'longnight'][idx % 4] : ['aurora', 'frost'][idx % 2];
     this.ammo = WEAPONS[this.weaponId].mag;
     this.state = 'advance';       // advance | hold | peek | rotate | plant | defuse | retreat
+    this.role = 'roam';           // roam | pin | flank | retake — set by assignSquadRoles
     this.target = null;           // current waypoint
     this.holdTimer = 0; this.peekTimer = 0; this.fireCd = 0; this.reloadT = 0;
     this.heard = null;            // {x,z,at} last gunfire heard
+    this.lastSeen = null;         // {x,z,at} last enemy seen (for pinning/suppression)
+    this.suppressCd = 0;          // seconds until the next suppression burst
     this.strafeDir = 1; this.strafeT = 0;
     this.reactT = 0;              // reaction delay before first shot
     this.kills = 0;
@@ -67,6 +70,8 @@ export class Bot {
     this.pos.set(x, 0, z); this.yaw = yaw; this.health = 100; this.alive = true;
     this.ammo = WEAPONS[this.weaponId].mag;
     this.state = 'advance'; this.target = null; this.fireCd = 0; this.reloadT = 0;
+    this.role = 'roam'; this.siteChoice = null; // site picked fresh each round
+    this.lastSeen = null; this.heard = null;
     this.mesh.visible = true; this.tag.visible = true;
   }
   die() { this.alive = false; this.mesh.visible = false; }
@@ -86,6 +91,32 @@ export class Bot {
   hear(x, z, now) { this.heard = { x, z, at: now }; }
 }
 
+// Squad roles, assigned once per round and again when the spike is planted.
+// The idea is a real two-man play instead of five solo rushes: one Jackal
+// pins the defenders down with suppressive fire at their last known spot
+// while a second flanks through the vent or the catwalk; when the spike is
+// planted the Sentinels retake as a pair, entering the site from two lanes
+// at once. Roles are only a waypoint bias and a suppression trigger — the
+// per-bot state machine below still owns movement and shooting.
+export function assignSquadRoles(bots, spike, spikeCarrier) {
+  const alive = bots.filter((b) => b.alive);
+  const jacks = alive.filter((b) => b.team === 'jac');
+  const sens = alive.filter((b) => b.team === 'sen');
+  for (const b of alive) b.role = 'roam';
+  if (spike.state === 'planted' && spike.site) {
+    // Retake: the two Sentinels enter the planted site together, one from
+    // each side; the Jackals fall back to hold the site.
+    sens.slice(0, 2).forEach((b) => { b.role = 'retake'; });
+    jacks.forEach((b) => { b.role = 'pin'; });
+    return;
+  }
+  // Attack: the carrier pushes the site; one Jackal pins the last known
+  // enemy position, one flanks wide through the vent/catwalk.
+  const flankers = jacks.filter((b) => b !== spikeCarrier);
+  if (flankers[0]) flankers[0].role = 'pin';
+  if (flankers[1]) flankers[1].role = 'flank';
+}
+
 // Bot update: one fixed-step tick. `world` gives {station, player, bots, spike, round,
 // onBotShoot, onBotKill, sound} — the sim in main.js owns damage and scoring.
 export function updateBot(bot, dt, world) {
@@ -93,6 +124,7 @@ export function updateBot(bot, dt, world) {
   const st = world.station, d = bot.difficulty(world.round);
   const w = WEAPONS[bot.weaponId];
   bot.fireCd -= dt; bot.holdTimer -= dt; bot.peekTimer -= dt; bot.strafeT -= dt;
+  bot.suppressCd -= dt;
   // --- pick a target: nearest visible enemy ---
   let enemy = null, enemyDist = 1e9;
   const foes = world.bots.filter((b) => b.alive && b.team !== bot.team);
@@ -104,7 +136,10 @@ export function updateBot(bot, dt, world) {
     if (!f.alive) continue;
     const fp = f.pos || f.position;
     const dist = Math.hypot(fp.x - bot.pos.x, fp.z - bot.pos.z);
-    if (dist < enemyDist && losClear(bot.pos, fp, st)) { enemy = f; enemyDist = dist; }
+    if (dist < enemyDist && losClear(bot.pos, fp, st)) {
+      enemy = f; enemyDist = dist;
+      bot.lastSeen = { x: fp.x, z: fp.z, at: world.time }; // remember for pinning
+    }
   }
   // --- objective logic ---
   const spike = world.spike;
@@ -125,12 +160,41 @@ export function updateBot(bot, dt, world) {
     const list = wps.filter((p) => p.zone === zone);
     return list.length ? list[Math.floor(bot.rng() * list.length)] : wps[0];
   };
-  if (!bot.target || bot.state === 'rotate' || (bot.state === 'plant' && bot.target?.zone !== spike.site)) {
-    if (bot.state === 'plant') bot.target = pick(spike.site);
-    else if (bot.state === 'rotate') bot.target = pick(spike.site);
+  // Retake entry: the pair splits by side of the site (bot index parity),
+  // so the two defenders enter from opposite lanes instead of stacking.
+  const pickRetake = (b, site, all) => {
+    const list = all.filter((p) => p.zone === site);
+    if (!list.length) return all[0];
+    const side = list.filter((p) => (b.idx % 2 === 0 ? p.x < 0 : p.x >= 0));
+    const pool = side.length ? side : list;
+    return pool[Math.floor(bot.rng() * pool.length)];
+  };
+  if (!bot.target || bot.state === 'rotate' || (bot.state === 'plant' && bot.target?.zone !== bot.siteChoice)) {
+    // The carrier picks its site once per round (A or B at random) and
+    // walks it; without this the plant always went to Site A.
+    if (bot.state === 'plant') {
+      if (!bot.siteChoice) bot.siteChoice = bot.rng() < 0.5 ? 'A' : 'B';
+      bot.target = pick(bot.siteChoice);
+    }
+    else if (bot.state === 'rotate') bot.target = pickRetake(bot, spike.site, wps);
     else if (bot.state === 'hold') bot.target = pick(spike.state === 'planted' ? spike.site : (bot.team === 'jac' ? 'A' : 'mid'));
+    // Squad roles steer the waypoint, not the trigger finger:
+    // a flanker takes the wide vent/catwalk route, a retaker enters the
+    // planted site from its own side, a pin holds near the last known enemy.
+    else if (bot.role === 'flank') bot.target = pick(bot.rng() < 0.5 ? 'vent' : 'cat');
+    else if (bot.role === 'retake') bot.target = pickRetake(bot, spike.site, wps);
+    else if (bot.role === 'pin' && bot.lastSeen && world.time - bot.lastSeen.at < 6) {
+      bot.target = { x: bot.lastSeen.x, z: bot.lastSeen.z, zone: 'pin' };
+    }
     else if (bot.heard && world.time - bot.heard.at < 4) bot.target = { x: bot.heard.x, z: bot.heard.z, zone: 'heard' };
     else bot.target = bot.team === 'jac' ? pick(bot.rng() < 0.5 ? 'A' : 'B') : pick(bot.rng() < 0.5 ? 'mid' : 'lane');
+  }
+  // --- suppression: a pinning bot with no line of sight still fires bursts
+  // at the enemy's last known spot, so the flank can move. Tracers and
+  // sound only — no damage without a hit, the world decides that.
+  if (!enemy && bot.role === 'pin' && bot.suppressCd <= 0 && bot.lastSeen && world.time - bot.lastSeen.at < 5) {
+    bot.suppressCd = 1.1 + bot.rng() * 0.5;
+    if (world.onSuppress) world.onSuppress(bot, bot.lastSeen);
   }
   // --- movement: walk to target, strafe while fighting, peek = quick lean out and back ---
   let mx = 0, mz = 0;

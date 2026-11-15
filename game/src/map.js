@@ -81,6 +81,17 @@ export function hazardTexture() {
     }
   }, [4, 1]);
 }
+// Stencil label: bold text on a transparent plate, for crate sides and drums.
+export function stencilTexture(text, fg) {
+  return canvasTex(256, 128, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = fg; g.textAlign = 'center';
+    g.font = 'bold 44px sans-serif';
+    g.fillText(text, w / 2, 62);
+    g.font = 'bold 24px sans-serif';
+    g.fillText('· AURORA STATION ·', w / 2, 100);
+  });
+}
 // Real signage: readable warning text painted on a plate.
 export function signTexture(lines, bg, fg, accent) {
   return canvasTex(512, 256, (g, w, h) => {
@@ -200,6 +211,7 @@ export class Station {
     }
     this.buildHalls(hullMat, hull2Mat, darkMat, rustMat, glassMat, hazMat, concMat);
     this.buildProps(rustMat, darkMat, hull2Mat, hazMat);
+    this.buildBackdrop(rustMat, darkMat, hull2Mat);
     this.buildLamps();
     this.buildSnow();
     this.buildWaypoints();
@@ -327,6 +339,67 @@ export class Station {
       new THREE.MeshStandardMaterial({ color: 0x9fd4e8, roughness: 0.1, metalness: 0.3, transparent: true, opacity: 0.7 }));
     ws.position.set(11.4, 0.95, -12.4); ws.rotation.y = 0.5; S.add(ws);
     this.addCollider(12, -12, 2.4, 1, 0.8);
+  }
+  buildBackdrop(rust, dark, hull2) {
+    const S = this.scene, rng = this.rng;
+    // Distant mountain ring: the station sits in a valley, so the horizon
+    // is peaks, not void. Dark rock with snow caps; fog blends the feet.
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x2c3644, roughness: 1, metalness: 0 });
+    const capMat = new THREE.MeshStandardMaterial({ color: 0xdfe9f2, roughness: 0.95, metalness: 0 });
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2 + rng() * 0.25;
+      const r = 78 + rng() * 28, h = 20 + rng() * 22, w = 16 + rng() * 14;
+      const peak = new THREE.Mesh(new THREE.ConeGeometry(w, h, 7), rockMat);
+      peak.position.set(Math.cos(a) * r, h / 2 - 1, Math.sin(a) * r);
+      peak.rotation.y = rng() * Math.PI;
+      S.add(peak);
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(w * 0.42, h * 0.32, 7), capMat);
+      cap.position.set(peak.position.x, h - 1 - h * 0.16, peak.position.z);
+      cap.rotation.y = peak.rotation.y;
+      S.add(cap);
+    }
+    // Icicles under the roof edges: translucent cones, catching the lamp light.
+    const iceMat = new THREE.MeshStandardMaterial({ color: 0xbcd8ee, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.85 });
+    // [x, z, baseY, count]: hall front roof (7.2), mid roof (4.7), catwalk deck (3.4).
+    for (const [cx, cz, baseY, n] of [[-8, -17, 6.9, 7], [8, -17, 6.9, 6], [0, -5, 4.4, 5], [-20, -2, 3.1, 5]]) {
+      for (let i = 0; i < n; i++) {
+        const len = 0.4 + rng() * 0.9;
+        const ic = new THREE.Mesh(new THREE.ConeGeometry(0.09 + rng() * 0.06, len, 6), iceMat);
+        ic.rotation.x = Math.PI;
+        ic.position.set(cx + (rng() - 0.5) * 8, baseY - len / 2, cz + (rng() - 0.5) * 1.2);
+        S.add(ic);
+      }
+    }
+    // Sagging cables between lamp poles: dark lines dipping between masts.
+    const cableMat = new THREE.LineBasicMaterial({ color: 0x0c0f12 });
+    for (const [[x1, z1], [x2, z2]] of [[[0, -17.5], [-10, -26]], [[0, -17.5], [10, -26]], [[0, 18.5], [-8, 26]], [[-20, -2], [-14, -8]]]) {
+      const pts = [];
+      for (let i = 0; i <= 10; i++) {
+        const t = i / 10;
+        pts.push(new THREE.Vector3(
+          x1 + (x2 - x1) * t,
+          5.1 - Math.sin(t * Math.PI) * 1.1,
+          z1 + (z2 - z1) * t));
+      }
+      S.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), cableMat));
+    }
+    // Fuel drums by the reactor: red drums with a FUEL stencil plate.
+    const drumMat = new THREE.MeshStandardMaterial({ map: metalTexture('#6e2a22', '#8a5426', rng), roughness: 0.8, metalness: 0.3 });
+    for (const [x, z] of [[-11, -31], [-9.6, -31.4], [-10.3, -29.8]]) {
+      const d = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 1.25, 12), drumMat);
+      d.position.set(x, 0.62, z); d.castShadow = true; S.add(d);
+      this.addCollider(x, z, 1.1, 1.1, 1.25);
+    }
+    this.sign(signTexture(['FUEL', 'DIESEL — NO SMOKING', 'FLAMMABLE'], '#2a1c14', '#ffd9a0', '#ff5a3c'),
+      3.4, 1.7, -10.3, 2.2, -30.4, Math.PI * 0.1);
+    // Stencilled supply crates: the station's own markings, readable up close.
+    const sten = new THREE.MeshStandardMaterial({ map: stencilTexture('SUPPLY 07', '#d8c9a0'), transparent: true, roughness: 0.8, metalness: 0.1 });
+    const crateSide = new THREE.MeshStandardMaterial({ map: metalTexture('#5a4a2e', '#7a4a28', rng), roughness: 0.8, metalness: 0.2 });
+    for (const [x, z, ry] of [[-4, -20, 0.3], [5, 21, -0.4]]) {
+      const c = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4),
+        [sten, crateSide, crateSide, crateSide, crateSide, crateSide]);
+      c.position.set(x, 0.7, z); c.rotation.y = ry; c.castShadow = true; S.add(c);
+    }
   }
   buildLamps() {
     const S = this.scene;

@@ -33,6 +33,9 @@ export const GRENADE_PRICE = 300;
 export const KILL_REWARD = 300;
 export const ROUND_WIN_REWARD = 3250;
 export const ROUND_LOSS_REWARD = 1900;
+// Loss-streak bonus (Counter-Strike style): a team that keeps losing earns
+// more each round, so a comeback stays possible: 1900 / 2400 / 2900.
+export const LOSS_STREAK_BONUS = [0, 500, 1000];
 export const PLANT_REWARD = 300;
 
 export function makeState() {
@@ -48,6 +51,7 @@ export function makeState() {
     roundKills: {},
     kills: {},
     deaths: {},
+    lossStreak: 0,           // consecutive rounds the player's team lost (loss bonus)
     feed: [],
     storm: 0,                // 0..1 storm intensity, gusts
     wind: 0,                 // -1..1 wind direction strength

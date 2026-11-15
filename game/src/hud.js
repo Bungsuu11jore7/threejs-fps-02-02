@@ -3,14 +3,35 @@
 export class Hud {
   constructor() {
     this.el = {};
-    for (const id of ['health', 'ammo', 'wname', 'timer', 'score', 'money', 'alive', 'feed', 'banner', 'hint', 'dmg', 'msg', 'buy', 'buyrows', 'menu', 'plant', 'plantbar', 'cross']) {
+    for (const id of ['health', 'ammo', 'wname', 'timer', 'score', 'money', 'alive', 'feed', 'banner', 'hint', 'dmg', 'msg', 'buy', 'buyrows', 'menu', 'plant', 'plantbar', 'cross', 'hitm', 'spike', 'stam', 'vig', 'gren']) {
       this.el[id] = document.getElementById(id);
     }
     this.feedLines = [];
     this.dmgTimer = 0;
+    this.hitmTimer = 0;
+  }
+  // Hitmarker: a white X over the crosshair for 0.18 s, red on a headshot —
+  // the instant feedback that a shot connected.
+  showHitmarker(head) {
+    const h = this.el.hitm;
+    h.style.display = 'block';
+    h.style.color = head ? '#ff5a4e' : '#ffffff';
+    this.hitmTimer = 0.18;
+  }
+  setGrenades(n) { this.el.gren.textContent = n > 0 ? `GRENADES ×${n}` : ''; }
+  setStamina(v) { this.el.stam.querySelector('i').style.width = `${Math.round(Math.max(0, Math.min(100, v)))}%`; }
+  // Objective line under the timer: who carries the spike, or the planted
+  // site with the seconds left before detonation.
+  setSpike(text) {
+    if (!text) { this.el.spike.style.display = 'none'; return; }
+    this.el.spike.style.display = 'block';
+    this.el.spike.textContent = text;
   }
   setHealth(hp) {
-    this.el.health.innerHTML = `HP <b style="color:${hp > 50 ? '#9fe8b0' : hp > 25 ? '#ffb35c' : '#ff6b5e'}">${Math.max(0, Math.ceil(hp))}</b>`;
+    const h = Math.max(0, Math.ceil(hp));
+    this.el.health.innerHTML = `HP <b style="color:${h > 50 ? '#9fe8b0' : h > 25 ? '#ffb35c' : '#ff6b5e'}">${h}</b>`;
+    // Low-health vignette: red edges close in as HP falls under 40.
+    this.el.vig.style.opacity = h >= 40 ? '0' : String((40 - h) / 40 * 0.85);
   }
   setAmmo(mag, reserve, name) {
     this.el.ammo.querySelector('b').textContent = `${mag} / ${reserve}`;
@@ -50,6 +71,7 @@ export class Hud {
   }
   tick(dt) {
     if (this.dmgTimer > 0) { this.dmgTimer -= dt; if (this.dmgTimer <= 0) this.el.dmg.style.display = 'none'; }
+    if (this.hitmTimer > 0) { this.hitmTimer -= dt; if (this.hitmTimer <= 0) this.el.hitm.style.display = 'none'; }
   }
   banner(title, sub, ms) {
     const b = this.el.banner;

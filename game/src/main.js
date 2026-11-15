@@ -4,11 +4,11 @@
 import * as THREE from 'three';
 import { makeState, WEAPONS, WEAPON_ORDER, TICK, WIN_ROUNDS, ROUND_TIME, BUY_TIME,
   PLANT_TIME, DEFUSE_TIME, HEADSHOT_MULT, KILL_REWARD, ROUND_WIN_REWARD,
-  ROUND_LOSS_REWARD, PLANT_REWARD, GRENADE_PRICE, mulberry32 } from './state.js';
+  ROUND_LOSS_REWARD, LOSS_STREAK_BONUS, PLANT_REWARD, GRENADE_PRICE, mulberry32 } from './state.js';
 import { Station } from './map.js';
 import { AudioSys } from './audio.js';
 import { Gunplay } from './gunplay.js';
-import { Bot, updateBot } from './bots.js';
+import { Bot, updateBot, assignSquadRoles } from './bots.js';
 import { Hud } from './hud.js';
 
 window.__errors = [];
@@ -53,6 +53,15 @@ const gun = new Gunplay(scene);
 const hud = new Hud();
 const state = makeState();
 state.shot = SHOT;
+
+// Scratch vectors: the hot paths reuse these instead of allocating a new
+// Vector3 per shot, per frame or per bot — no garbage in the fire loop.
+const _eye = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _end = new THREE.Vector3();
+const _muzzlePos = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
 
 const player = {
   team: 'sen', name: 'YOU', alive: true,
@@ -163,6 +172,8 @@ function startCombat() {
   state.phase = 'combat'; state.timeLeft = ROUND_TIME;
   hud.hideBuy();
   hud.msg(state.spikeCarrier ? `${state.spikeCarrier.name} carries the spike — stop the plant!` : '', 4000);
+  // Squad roles for this round: a pin, a flanker, a carrier push.
+  assignSquadRoles(bots, state.spike, state.spikeCarrier);
   audio.radioChatter();
 }
 function endRound(winner, reason) {
@@ -170,13 +181,21 @@ function endRound(winner, reason) {
   state.phase = 'roundEnd'; state.timeLeft = 4;
   state.score[winner]++;
   const isPlayerWin = winner === 'sen';
-  state.money += isPlayerWin ? ROUND_WIN_REWARD : ROUND_LOSS_REWARD;
+  // Loss-streak bonus: each consecutive lost round pays more, so a team
+  // that is down can still buy back into the match.
+  let reward;
+  if (isPlayerWin) { state.lossStreak = 0; reward = ROUND_WIN_REWARD; }
+  else {
+    reward = ROUND_LOSS_REWARD + LOSS_STREAK_BONUS[Math.min(state.lossStreak, LOSS_STREAK_BONUS.length - 1)];
+    state.lossStreak++;
+  }
+  state.money += reward;
   // round MVP: most kills this round
   let mvp = null, mk = -1;
   for (const [n, k] of Object.entries(state.roundKills)) if (k > mk) { mk = k; mvp = n; }
   state.mvp = mvp;
   const title = isPlayerWin ? 'ROUND WON' : 'ROUND LOST';
-  const sub = `${reason} · MVP: ${mvp || '—'} (${mk} kills) · +$${isPlayerWin ? ROUND_WIN_REWARD : ROUND_LOSS_REWARD}`;
+  const sub = `${reason} · MVP: ${mvp || '—'} (${mk} kills) · +$${reward}${isPlayerWin ? '' : ` (loss bonus ${state.lossStreak})`}`;
   hud.banner(title, sub, 3800);
   hud.setScore(state.score.sen, state.score.jac, state.round);
   hud.setMoney(state.money);
@@ -223,7 +242,7 @@ function buyGrenade() {
   if (state.phase !== 'buy') return;
   if (state.money < GRENADE_PRICE) { hud.msg('Not enough money', 1500); return; }
   state.money -= GRENADE_PRICE; player.grenades++;
-  hud.setMoney(state.money); hud.msg('Frag grenade +1', 1500);
+  hud.setMoney(state.money); hud.setGrenades(player.grenades); hud.msg('Frag grenade +1', 1500);
 }
 function toggleBuy() {
   if (state.phase !== 'buy') return;
@@ -231,13 +250,13 @@ function toggleBuy() {
   if (b.style.display === 'block') hud.hideBuy();
   else hud.showBuy(WEAPON_ORDER.map((id) => ({ name: WEAPONS[id].name, price: WEAPONS[id].price })), state.money);
 }
-// --- shooting ---
-function eyePos() { return new THREE.Vector3(player.pos.x, player.pos.y, player.pos.z); }
+// --- shooting (scratch vectors: no allocation per shot) ---
+function eyePos() { return _eye.set(player.pos.x, player.pos.y, player.pos.z); }
 function shootDir() {
   const w = WEAPONS[player.weaponId];
   const spreadDeg = (w.spread + player.spreadBloom + (player.moving ? w.moveSpread : 0)) * (player.ads ? 0.35 : 1);
   const s = THREE.MathUtils.degToRad(spreadDeg) * 0.5;
-  const dir = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(player.pitch + player.recoilP, player.yaw + player.recoilY, 0, 'YXZ'));
+  const dir = _dir.set(0, 0, -1).applyEuler(new THREE.Euler(player.pitch + player.recoilP, player.yaw + player.recoilY, 0, 'YXZ'));
   dir.x += (Math.random() - 0.5) * s * 2;
   dir.y += (Math.random() - 0.5) * s * 2;
   dir.z += (Math.random() - 0.5) * s * 2;
@@ -277,7 +296,7 @@ function fireWeapon() {
   player.fireCd = 60 / w.rpm;
   player.mag--;
   const from = eyePos();
-  const muzzlePos = new THREE.Vector3();
+  const muzzlePos = _muzzlePos;
   muzzle.getWorldPosition(muzzlePos);
   const pellets = w.pellets || 1;
   let hitAny = false;
@@ -286,12 +305,13 @@ function fireWeapon() {
     const wallD = wallHit(from, dir, w.range);
     const hit = rayHitBot(from, dir, w.range);
     const endD = hit && hit.dist < wallD ? hit.dist : Math.min(wallD, w.range);
-    const end = from.clone().addScaledVector(dir, endD);
+    const end = _end.copy(from).addScaledVector(dir, endD);
     gun.fireTracer(muzzlePos, end, w.tracer);
     if (hit && hit.dist < wallD) {
       hitAny = true;
       const dmg = w.dmg * (hit.part === 'head' ? HEADSHOT_MULT : 1);
       damageBot(hit.bot, dmg, hit.part, 'YOU');
+      hud.showHitmarker(hit.part === 'head');
       gun.blood(new THREE.Vector3(hit.bot.pos.x, hit.part === 'head' ? 1.75 : 1.2, hit.bot.pos.z));
     } else if (wallD < w.range) {
       gun.impact(end, station.surfaceAt(end.x, end.z));
@@ -303,9 +323,8 @@ function fireWeapon() {
   player.recoilP += THREE.MathUtils.degToRad(kick * (player.ads ? 0.6 : 1));
   player.recoilY += THREE.MathUtils.degToRad((Math.random() - 0.5) * kick * 0.7);
   player.spreadBloom = Math.min(3.5, player.spreadBloom + kick * 0.35);
-  gun.muzzleFlash(muzzlePos, new THREE.Vector3(0, 0, -1).applyEuler(camera.rotation));
-  const right = new THREE.Vector3(1, 0, 0).applyEuler(camera.rotation);
-  gun.ejectCasing(muzzlePos, right);
+  gun.muzzleFlash(muzzlePos, _fwd.set(0, 0, -1).applyEuler(camera.rotation));
+  gun.ejectCasing(muzzlePos, _right.set(1, 0, 0).applyEuler(camera.rotation));
   audio.shot(player.weaponId === 'polaris' ? 'sniper' : player.weaponId === 'blizzard' ? 'shotgun' : 'rifle',
     station.surfaceAt(player.pos.x, player.pos.z) !== 'snow');
   // every shot is heard: bots within 40 m turn toward it
@@ -359,6 +378,7 @@ function damagePlayer(dmg, fromPos, byName) {
 function throwGrenade() {
   if (player.grenades <= 0 || state.phase !== 'combat') return;
   player.grenades--;
+  hud.setGrenades(player.grenades);
   const dir = new THREE.Vector3(0, 0, -1).applyEuler(camera.rotation);
   gun.throwGrenade(eyePos(), dir, 'YOU');
   audio.beep(false);
@@ -388,6 +408,8 @@ function plantTick(dt) {
         hud.feed(`Spike planted at Site ${state.spike.site}! Defuse it!`, '#ff5a3c');
         hud.banner('SPIKE PLANTED', `Site ${state.spike.site} — defuse before detonation`, 3000);
         audio.beep(true);
+        // The plant flips the squad roles: Sentinels retake as a pair now.
+        assignSquadRoles(bots, state.spike, state.spikeCarrier);
       }
     } else state.spike.timer = Math.max(0, state.spike.timer - dt);
   }
@@ -407,6 +429,15 @@ function plantTick(dt) {
   } else hud.setPlant(null);
   // planted spike detonates 25 s after planting
   if (state.spike.state === 'planted' && state.time - state.spike.plantedAt > 25) endRound('jac', 'Spike detonated');
+  // objective line: who carries the spike, or the planted site + countdown
+  if (state.spike.state === 'planted') {
+    const left = Math.max(0, Math.ceil(25 - (state.time - state.spike.plantedAt)));
+    hud.setSpike(`SPIKE PLANTED — SITE ${state.spike.site} · ${left}s`);
+  } else if (state.spike.state === 'carried' && state.spikeCarrier) {
+    hud.setSpike(`SPIKE CARRIED BY ${state.spikeCarrier.name.toUpperCase()}`);
+  } else {
+    hud.setSpike(null);
+  }
 }
 // --- fixed-step simulation (60 Hz), kept apart from rendering ---
 function tick(dt) {
@@ -457,8 +488,25 @@ function tick(dt) {
         to.x += (Math.random() - 0.5) * 2; to.y += (Math.random() - 0.5) * 1; to.z += (Math.random() - 0.5) * 2;
         gun.fireTracer(from, to, WEAPONS[bot.weaponId].tracer);
       },
+      // Suppression: a pinning bot fires a burst at a last known position it
+      // cannot see. Tracers only — no damage — but a burst aimed near the
+      // player cracks past the camera, so being pinned feels dangerous.
+      onSuppress: (bot, pos) => {
+        const from = bot.headPos();
+        for (let i = 0; i < 3; i++) {
+          _end.set(pos.x + (Math.random() - 0.5) * 2.4, 1.1 + Math.random() * 0.7, pos.z + (Math.random() - 0.5) * 2.4);
+          gun.fireTracer(from, _end, WEAPONS[bot.weaponId].tracer);
+        }
+        gun.muzzleFlash(from, _fwd.set(0, 0, 1));
+        if (player.alive && Math.hypot(pos.x - player.pos.x, pos.z - player.pos.z) < 12) audio.crack();
+      },
     };
-    for (const b of bots) updateBot(b, dt, world);
+    // Bots only fight once the round is live: during the buy phase they
+    // hold at spawn. Updating them in buy let them shoot and kill each
+    // other — and damage a player who cannot shoot back — before round 1.
+    if (state.phase === 'combat') {
+      for (const b of bots) updateBot(b, dt, world);
+    }
     // ally bots vs jackals is handled inside updateBot via onBotShoot with enemy bots
   }
   gun.update(dt, (p, dmg, radius, owner) => explodeAt(p, dmg, radius, owner));
@@ -514,6 +562,7 @@ function updatePlayer(dt) {
   player.pos.y = THREE.MathUtils.damp(player.pos.y, player.crouch ? 1.15 : 1.62, 12, dt);
   if (sprint && player.moving) player.stamina = Math.max(0, player.stamina - dt * 22);
   else player.stamina = Math.min(100, player.stamina + dt * 14);
+  hud.setStamina(player.stamina);
   // footsteps: surface changes the sound; footprints pressed into snow
   const spd = Math.hypot(player.vel.x, player.vel.z);
   if (spd > 1 && state.time - player.lastStep > (sprint ? 0.34 : 0.48)) {
@@ -571,9 +620,19 @@ function applyShot(n) {
       if (!staged.has(i)) { b.pos.set(i % 2 ? 24 : -24, 0, -38); b.yaw = 0; b.mesh.position.copy(b.pos); b.mesh.rotation.y = 0; }
     });
   };
-  if (n === 1) { // cover: spawn overlook, aurora sky, station lamps, falling snow
+  if (n === 1) { // cover: mid lane looking north at Site A — bots in the lane,
+    // tracer fire, reactor hall front and aurora above the roofline
     state.storm = 0.25;
-    stage(0, 38, 0, [[0, -4, 12, 0.4], [1, 6, 8, -0.4], [4, -6, 20, 0.2]]);
+    // bots are ordered [Vex, Rook, Frost, Havoc, Iris, Boreal]: two Sentinel
+    // allies flank the player, two Jackals push down the lane. Frost (bot 2)
+    // carries the spike, off-frame to the north.
+    stage(0, 10, 0, [[4, -6, 4, 0.3], [5, 4, 6, -0.3], [0, -4, -8, 0.1], [1, 5, -12, -0.2]]);
+    // a firefight already in progress: tracer, muzzle flash, one bot down the lane
+    const from = new THREE.Vector3(-4, 1.5, -8);
+    gun.fireTracer(from, new THREE.Vector3(0, 1.4, 10), 0xffe9a8);
+    gun.muzzleFlash(from, new THREE.Vector3(0, 0, 1));
+    // objective state is real: Rook carries the spike, so the HUD line shows it
+    state.spike.state = 'carried'; state.spikeCarrier = bots[2];
     hud.banner('WHITEOUT', 'AURORA STATION — ROUND 1', 0);
   } else if (n === 2) { // mid combat: tracers + muzzle flash in the connector
     state.storm = 0.6;
@@ -582,6 +641,8 @@ function applyShot(n) {
     gun.fireTracer(from, new THREE.Vector3(0, 1.4, 12), 0xffe9a8);
     gun.muzzleFlash(from, new THREE.Vector3(0, 0, 1));
     gun.blood(new THREE.Vector3(-3, 1.2, -6));
+    hud.showHitmarker(true);
+    state.spike.state = 'carried'; state.spikeCarrier = bots[2];
     hud.feed('YOU ▸ Vex ☠ HEADSHOT', '#ffb08a');
     hud.feed('Iris ▸ Rook', '#7fd4ff');
     hud.setHealth(82); player.health = 82;
@@ -589,6 +650,8 @@ function applyShot(n) {
   } else if (n === 3) { // Site A reactor hall: core glow, hazard floor, lamp shafts
     state.storm = 0.15;
     stage(6, -18, 0.46, [[2, -4, -28, 0.3], [3, 4, -30, -0.3], [5, -8, -22, 0.6]]);
+    // real planted state, 7 s in: the HUD line reads "18s" from plantTick
+    state.spike.state = 'planted'; state.spike.site = 'A'; state.spike.plantedAt = state.time - 7;
     hud.setHealth(100); hud.setAmmo(30, 90, 'AURORA-5');
   } else { // Site B comms dome at dusk storm: buy menu open over the scene
     state.storm = 0.9;

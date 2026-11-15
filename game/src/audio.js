@@ -156,4 +156,15 @@ export class AudioSys {
     const g = this.ctx.createGain(); g.gain.setValueAtTime(0.07, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
     o.connect(g); g.connect(this.master); o.start(t); o.stop(t + 0.07); }
+  // Suppression crack: the sharp snap of a bullet passing close by — the
+  // sound of being pinned down, distinct from a hit or a distant shot.
+  crack() { if (!this.ctx) return; const t = this.now();
+    const len = Math.floor(this.ctx.sampleRate * 0.05);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = this.ctx.createBufferSource(); src.buffer = buf;
+    const f = this.ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 3200; f.Q.value = 1.4;
+    const g = this.ctx.createGain(); g.gain.value = 0.22;
+    src.connect(f); f.connect(g); g.connect(this.master); src.start(t); }
 }
