@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WHITEOUT — Aurora Station</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0a1420;
+    font-family:"Segoe UI",system-ui,sans-serif;color:#dfe9f2;
+    -webkit-user-select:none;user-select:none}
+  #c{display:block;width:100%;height:100%}
+  .hud{position:fixed;pointer-events:none;z-index:5}
+  #cross{left:50%;top:50%;width:22px;height:22px;transform:translate(-50%,-50%)}
+  #cross i{position:absolute;background:#e8f4ff;box-shadow:0 0 3px #000}
+  #cross .h{left:0;right:0;top:10px;height:2px}
+  #cross .v{top:0;bottom:0;left:10px;width:2px}
+  #cross .dot{left:10px;top:10px;width:2px;height:2px;border-radius:50%}
+  #health{left:26px;bottom:22px;font-size:15px}
+  #health b{font-size:34px;color:#9fe8b0}
+  #ammo{right:26px;bottom:22px;text-align:right;font-size:15px}
+  #ammo b{font-size:34px;color:#ffe9a8}
+  #timer{left:50%;top:14px;transform:translateX(-50%);font-size:26px;font-weight:700;
+    letter-spacing:2px;text-shadow:0 2px 6px #000}
+  #score{left:50%;top:48px;transform:translateX(-50%);font-size:15px;font-weight:700;
+    letter-spacing:1px;text-shadow:0 2px 6px #000}
+  #score .sen{color:#7fd4ff}#score .jac{color:#ffb08a}
+  #money{left:26px;top:16px;font-size:16px;color:#ffe9a8;text-shadow:0 2px 4px #000}
+  #alive{right:26px;top:16px;font-size:14px;text-align:right;text-shadow:0 2px 4px #000}
+  #feed{right:26px;top:64px;width:340px;text-align:right;font-size:13px;line-height:1.5;
+    text-shadow:0 1px 3px #000}
+  #banner{left:50%;top:34%;transform:translate(-50%,-50%);text-align:center;display:none}
+  #banner h1{font-size:44px;margin:0;letter-spacing:6px;text-shadow:0 3px 12px #000}
+  #banner p{font-size:18px;margin:6px 0 0;text-shadow:0 2px 6px #000}
+  #hint{left:50%;bottom:96px;transform:translateX(-50%);font-size:13px;opacity:.85;
+    text-shadow:0 1px 3px #000;text-align:center}
+  #dmg{left:50%;top:50%;width:120px;height:120px;transform:translate(-50%,-50%);display:none}
+  #dmg i{position:absolute;left:50%;top:0;width:0;height:0;border-left:14px solid transparent;
+    border-right:14px solid transparent;border-bottom:26px solid rgba(255,60,50,.9);
+    transform-origin:14px 60px}
+  #msg{left:50%;top:110px;transform:translateX(-50%);font-size:15px;color:#ffe9a8;
+    text-shadow:0 2px 4px #000;text-align:center}
+  #buy{left:50%;top:50%;transform:translate(-50%,-50%);width:520px;display:none;
+    position:fixed;background:rgba(8,18,30,.92);border:1px solid #3d6a8a;border-radius:10px;
+    padding:18px 22px;pointer-events:auto;z-index:8}
+  #buy h2{margin:0 0 4px;font-size:20px;letter-spacing:3px;color:#7fd4ff}
+  #buy p{margin:0 0 12px;font-size:13px;opacity:.8}
+  #buy .row{display:flex;justify-content:space-between;padding:7px 4px;border-top:1px solid #24405a;
+    font-size:15px;cursor:pointer}
+  #buy .row:hover{background:#14324a}
+  #buy .row b{color:#ffe9a8}
+  #buy .row .k{color:#7fd4ff;font-weight:700;margin-right:10px}
+  #menu{left:0;top:0;width:100%;height:100%;display:flex;flex-direction:column;
+    position:fixed;align-items:center;justify-content:center;background:rgba(5,12,20,.55);z-index:9;
+    pointer-events:auto;text-align:center}
+  #menu h1{font-size:56px;margin:0;letter-spacing:10px;color:#eaf6ff;
+    text-shadow:0 0 24px #4fb2ff,0 3px 10px #000}
+  #menu h2{font-size:17px;font-weight:400;letter-spacing:4px;color:#ffb35c;margin:8px 0 22px}
+  #menu button{font-size:19px;padding:13px 42px;background:#ffb35c;color:#1a1206;border:0;
+    border-radius:8px;cursor:pointer;font-weight:700;letter-spacing:2px}
+  #menu button:hover{background:#ffc978}
+  #menu .sub{margin-top:20px;font-size:13px;line-height:1.7;opacity:.85;max-width:560px}
+  #plant{left:50%;bottom:150px;transform:translateX(-50%);display:none;font-size:16px;
+    color:#ffb35c;text-shadow:0 2px 4px #000}
+  #plantbar{left:50%;bottom:128px;transform:translateX(-50%);width:220px;height:8px;
+    background:#22384c;border-radius:4px;display:none;overflow:hidden}
+  #plantbar i{display:block;height:100%;width:0%;background:#ffb35c}
+</style>
+<script type="importmap">
+{"imports":{"three":"./vendor/three/three.module.min.js"}}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud" id="cross"><i class="h"></i><i class="v"></i><i class="dot"></i></div>
+<div class="hud" id="health">HP <b>100</b></div>
+<div class="hud" id="ammo"><b>30 / 90</b><br><span id="wname">AURORA-5</span></div>
+<div class="hud" id="timer">1:40</div>
+<div class="hud" id="score"><span class="sen">SENTINELS 0</span> — <span class="jac">0 JACKALS</span></div>
+<div class="hud" id="money">$800</div>
+<div class="hud" id="alive">SENTINELS 3 alive<br>JACKALS 4 alive</div>
+<div class="hud" id="feed"></div>
+<div class="hud" id="banner"><h1></h1><p></p></div>
+<div class="hud" id="hint">WASD move · SHIFT walk slow · C crouch · CLICK fire · R reload · RMB aim · 1-6 buy · B buy menu · E plant / defuse · G grenade</div>
+<div class="hud" id="dmg"><i></i></div>
+<div class="hud" id="msg"></div>
+<div class="hud" id="plant">PLANTING THE SPIKE…</div>
+<div class="hud" id="plantbar"><i></i></div>
+<div id="buy"><h2>BUY PHASE — AURORA ARMOURY</h2><p>Press 1–6 to buy, B or ESC to close. Money carries between rounds.</p><div id="buyrows"></div></div>
+<div id="menu">
+  <h1>WHITEOUT</h1>
+  <h2>AURORA STATION · SENTINELS vs JACKALS</h2>
+  <button id="play">DEPLOY — CLICK TO PLAY</button>
+  <div class="sub">Defend Aurora Station. First team to 5 rounds wins.<br>
+  Jackals plant the spike at Site A (Reactor Hall) or Site B (Comms Dome) — stop the plant, or defuse it.<br>
+  Headshots deal double damage. Kills pay $300. Buy phase lasts 15 seconds.</div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
