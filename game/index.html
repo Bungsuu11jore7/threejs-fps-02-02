@@ -64,6 +64,20 @@
   #plantbar{left:50%;bottom:128px;transform:translateX(-50%);width:220px;height:8px;
     background:#22384c;border-radius:4px;display:none;overflow:hidden}
   #plantbar i{display:block;height:100%;width:0%;background:#ffb35c}
+  #hitm{left:50%;top:50%;width:26px;height:26px;transform:translate(-50%,-50%);
+    display:none;color:#fff}
+  #hitm i{position:absolute;background:currentColor;box-shadow:0 0 3px #000}
+  #hitm i:nth-child(1){left:11px;top:-4px;width:3px;height:10px}
+  #hitm i:nth-child(2){left:11px;bottom:-4px;width:3px;height:10px}
+  #hitm i:nth-child(3){left:-4px;top:11px;width:10px;height:3px}
+  #hitm i:nth-child(4){right:-4px;top:11px;width:10px;height:3px}
+  #spike{left:50%;top:82px;transform:translateX(-50%);font-size:14px;font-weight:700;
+    letter-spacing:1px;color:#ffb35c;text-shadow:0 2px 4px #000;display:none}
+  #stam{left:26px;bottom:66px;width:130px;height:5px;background:#22384c;border-radius:3px}
+  #stam i{display:block;height:100%;width:100%;background:#7fd4ff;border-radius:3px}
+  #vig{left:0;top:0;width:100%;height:100%;pointer-events:none;opacity:0;
+    background:radial-gradient(ellipse at center,transparent 55%,rgba(255,30,20,.55) 100%)}
+  #gren{right:26px;bottom:64px;font-size:13px;color:#cfe8c8;text-shadow:0 1px 3px #000}
 </style>
 <script type="importmap">
 {"imports":{"three":"./vendor/three/three.module.min.js"}}
@@ -72,10 +86,15 @@
 <body>
 <canvas id="c"></canvas>
 <div class="hud" id="cross"><i class="h"></i><i class="v"></i><i class="dot"></i></div>
+<div class="hud" id="hitm"><i></i><i></i><i></i><i></i></div>
+<div class="hud" id="vig"></div>
 <div class="hud" id="health">HP <b>100</b></div>
+<div class="hud" id="stam"><i></i></div>
 <div class="hud" id="ammo"><b>30 / 90</b><br><span id="wname">AURORA-5</span></div>
+<div class="hud" id="gren"></div>
 <div class="hud" id="timer">1:40</div>
 <div class="hud" id="score"><span class="sen">SENTINELS 0</span> — <span class="jac">0 JACKALS</span></div>
+<div class="hud" id="spike"></div>
 <div class="hud" id="money">$800</div>
 <div class="hud" id="alive">SENTINELS 3 alive<br>JACKALS 4 alive</div>
 <div class="hud" id="feed"></div>
